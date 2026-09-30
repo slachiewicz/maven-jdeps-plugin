@@ -25,7 +25,7 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.Set;
 
-import org.apache.maven.toolchain.ToolchainManager;
+import org.apache.maven.api.PathScope;
 import org.codehaus.plexus.util.cli.Commandline;
 import org.junit.jupiter.api.Test;
 
@@ -36,24 +36,25 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class AbstractJDepsMojoTest {
 
     private static class TestJDepsMojo extends AbstractJDepsMojo {
-        TestJDepsMojo(ToolchainManager toolchainManager) {
-            super(toolchainManager);
-        }
-
         @Override
-        protected String getClassesDirectory() {
-            return "/path/to/classes";
+        protected Path getClassesDirectory() {
+            return Paths.get("/path/to/classes");
         }
 
         @Override
         protected Collection<Path> getClassPath() {
             return new HashSet<>();
         }
+
+        @Override
+        protected PathScope getPathScope() {
+            return PathScope.MAIN_COMPILE;
+        }
     }
 
     @Test
     void testJDKInternalsOptionIsAdded() throws Exception {
-        TestJDepsMojo mojo = new TestJDepsMojo(null);
+        TestJDepsMojo mojo = new TestJDepsMojo();
 
         // Set jdkinternals to true
         Field jdkInternalsField = AbstractJDepsMojo.class.getDeclaredField("jdkinternals");
@@ -72,7 +73,7 @@ class AbstractJDepsMojoTest {
 
     @Test
     void testJDKInternalsOptionNotAddedWhenFalse() throws Exception {
-        TestJDepsMojo mojo = new TestJDepsMojo(null);
+        TestJDepsMojo mojo = new TestJDepsMojo();
 
         // Set jdkinternals to false (default)
         Field jdkInternalsField = AbstractJDepsMojo.class.getDeclaredField("jdkinternals");
@@ -92,7 +93,7 @@ class AbstractJDepsMojoTest {
 
     @Test
     void testMultiReleaseOptionIsAddedWhenExplicitlyConfigured() throws Exception {
-        TestJDepsMojo mojo = new TestJDepsMojo(null);
+        TestJDepsMojo mojo = new TestJDepsMojo();
 
         Field effectiveMultiReleaseField = AbstractJDepsMojo.class.getDeclaredField("effectiveMultiRelease");
         effectiveMultiReleaseField.setAccessible(true);
@@ -111,7 +112,7 @@ class AbstractJDepsMojoTest {
 
     @Test
     void testMultiReleaseOptionNotAddedByDefault() throws Exception {
-        TestJDepsMojo mojo = new TestJDepsMojo(null);
+        TestJDepsMojo mojo = new TestJDepsMojo();
 
         Commandline cmd = new Commandline();
         Set<Path> dependenciesToAnalyze = new HashSet<>();

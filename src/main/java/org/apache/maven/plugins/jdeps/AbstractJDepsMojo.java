@@ -20,10 +20,8 @@ package org.apache.maven.plugins.jdeps;
 
 import java.io.File;
 import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
+import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -38,18 +36,20 @@ import java.util.jar.Manifest;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.SystemUtils;
-import org.apache.maven.artifact.Artifact;
-import org.apache.maven.artifact.ArtifactUtils;
-import org.apache.maven.artifact.DependencyResolutionRequiredException;
-import org.apache.maven.execution.MavenSession;
-import org.apache.maven.plugin.AbstractMojo;
-import org.apache.maven.plugin.MojoExecutionException;
-import org.apache.maven.plugin.MojoFailureException;
-import org.apache.maven.plugins.annotations.Parameter;
+import org.apache.maven.api.Dependency;
+import org.apache.maven.api.PathScope;
+import org.apache.maven.api.Project;
+import org.apache.maven.api.Session;
+import org.apache.maven.api.Toolchain;
+import org.apache.maven.api.di.Inject;
+import org.apache.maven.api.plugin.Log;
+import org.apache.maven.api.plugin.Mojo;
+import org.apache.maven.api.plugin.MojoException;
+import org.apache.maven.api.plugin.annotations.Parameter;
+import org.apache.maven.api.services.DependencyResolver;
+import org.apache.maven.api.services.DependencyResolverResult;
+import org.apache.maven.api.services.ToolchainManager;
 import org.apache.maven.plugins.jdeps.consumers.JDepsConsumer;
-import org.apache.maven.project.MavenProject;
-import org.apache.maven.toolchain.Toolchain;
-import org.apache.maven.toolchain.ToolchainManager;
 import org.codehaus.plexus.util.MatchPatterns;
 import org.codehaus.plexus.util.cli.CommandLineException;
 import org.codehaus.plexus.util.cli.CommandLineUtils;
@@ -60,16 +60,19 @@ import org.codehaus.plexus.util.cli.Commandline;
  *
  * @author Robert Scholte
  */
-public abstract class AbstractJDepsMojo extends AbstractMojo {
+public abstract class AbstractJDepsMojo implements Mojo {
 
-    @Parameter(defaultValue = "${project}", readonly = true, required = true)
-    private MavenProject project;
+    @Inject
+    private Log log;
 
-    @Parameter(defaultValue = "${session}", readonly = true, required = true)
-    private MavenSession session;
+    @Inject
+    private Project project;
+
+    @Inject
+    private Session session;
 
     @Parameter(defaultValue = "${project.build.directory}", readonly = true, required = true)
-    private File outputDirectory;
+    private Path outputDirectory;
 
     /**
      * Indicates whether the build will continue even if there are jdeps warnings.
@@ -141,7 +144,7 @@ public abstract class AbstractJDepsMojo extends AbstractMojo {
      * Destination directory for DOT file output.
      */
     @Parameter(property = "jdeps.dotOutput")
-    private File dotOutput;
+    private Path dotOutput;
 
     /**
      * <dl>
@@ -204,18 +207,29 @@ public abstract class AbstractJDepsMojo extends AbstractMojo {
     @Parameter(defaultValue = "false", property = "jdeps.jdkinternals")
     private boolean jdkinternals;
 
-    private final ToolchainManager toolchainManager;
+    @Inject
+    private ToolchainManager toolchainManager;
 
-    protected AbstractJDepsMojo(ToolchainManager toolchainManager) {
-        this.toolchainManager = toolchainManager;
+    @Inject
+    private DependencyResolver dependencyResolver;
+
+    private DependencyResolverResult resolution;
+
+    protected Log getLog() {
+        return log;
     }
 
-    protected MavenProject getProject() {
+    protected Project getProject() {
         return project;
     }
 
-    public void execute() throws MojoExecutionException, MojoFailureException {
-        if (!new File(getClassesDirectory()).exists()) {
+    protected Session getSession() {
+        return session;
+    }
+
+    @Override
+    public void execute() throws MojoException {
+        if (!Files.exists(getClassesDirectory())) {
             getLog().debug("No classes to analyze");
             return;
         }
@@ -224,7 +238,7 @@ public abstract class AbstractJDepsMojo extends AbstractMojo {
         try {
             jExecutable = getJDepsExecutable();
         } catch (IOException e) {
-            throw new MojoFailureException("Unable to find jdeps command: " + e.getMessage(), e);
+            throw new MojoException("Unable to find jdeps command: " + e.getMessage(), e);
         }
 
         //      Synopsis
@@ -232,18 +246,9 @@ public abstract class AbstractJDepsMojo extends AbstractMojo {
         Commandline cmd = new Commandline();
         cmd.setExecutable(jExecutable);
 
-        Set<Path> dependenciesToAnalyze = null;
-        try {
-            dependenciesToAnalyze = getDependenciesToAnalyze(includeClasspath);
-        } catch (DependencyResolutionRequiredException e) {
-            throw new MojoExecutionException(e.getMessage(), e);
-        }
+        Set<Path> dependenciesToAnalyze = getDependenciesToAnalyze(includeClasspath);
 
-        try {
-            effectiveMultiRelease = resolveMultiRelease(jExecutable, dependenciesToAnalyze);
-        } catch (DependencyResolutionRequiredException e) {
-            throw new MojoExecutionException(e.getMessage(), e);
-        }
+        effectiveMultiRelease = resolveMultiRelease(jExecutable, dependenciesToAnalyze);
 
         addJDepsOptions(cmd, dependenciesToAnalyze);
         addJDepsClasses(cmd, dependenciesToAnalyze);
@@ -267,15 +272,15 @@ public abstract class AbstractJDepsMojo extends AbstractMojo {
             }
 
             if (isFailOnWarning()) {
-                throw new MojoExecutionException(msg.toString());
+                throw new MojoException(msg.toString());
             }
         }
     }
 
-    protected void addJDepsOptions(Commandline cmd, Set<Path> dependenciesToAnalyze) throws MojoFailureException {
+    protected void addJDepsOptions(Commandline cmd, Set<Path> dependenciesToAnalyze) {
         if (dotOutput != null) {
             cmd.createArg().setValue("-dotoutput");
-            cmd.createArg().setFile(dotOutput);
+            cmd.createArg().setFile(dotOutput.toFile());
         }
 
         if (verbose != null) {
@@ -288,23 +293,18 @@ public abstract class AbstractJDepsMojo extends AbstractMojo {
             }
         }
 
-        try {
-            Collection<Path> cp = new ArrayList<>();
+        Collection<Path> cp = new ArrayList<>();
 
-            for (Path path : getClassPath()) {
-                if (!dependenciesToAnalyze.contains(path)) {
-                    cp.add(path);
-                }
+        for (Path path : getClassPath()) {
+            if (!dependenciesToAnalyze.contains(path)) {
+                cp.add(path);
             }
+        }
 
-            if (!cp.isEmpty()) {
-                cmd.createArg().setValue("-cp");
+        if (!cp.isEmpty()) {
+            cmd.createArg().setValue("-cp");
 
-                cmd.createArg().setValue(StringUtils.join(cp.iterator(), File.pathSeparator));
-            }
-
-        } catch (DependencyResolutionRequiredException e) {
-            throw new MojoFailureException(e.getMessage(), e);
+            cmd.createArg().setValue(StringUtils.join(cp.iterator(), File.pathSeparator));
         }
 
         if (packages != null) {
@@ -346,11 +346,10 @@ public abstract class AbstractJDepsMojo extends AbstractMojo {
         }
     }
 
-    protected Set<Path> getDependenciesToAnalyze(boolean includeClasspath)
-            throws DependencyResolutionRequiredException {
+    protected Set<Path> getDependenciesToAnalyze(boolean includeClasspath) {
         Set<Path> jdepsClasses = new LinkedHashSet<>();
 
-        jdepsClasses.add(Paths.get(getClassesDirectory()));
+        jdepsClasses.add(getClassesDirectory());
 
         if (includeClasspath) {
             jdepsClasses.addAll(getClassPath());
@@ -366,12 +365,13 @@ public abstract class AbstractJDepsMojo extends AbstractMojo {
                 excludes = MatchPatterns.from(Collections.emptyList());
             }
 
-            for (Artifact artifact : project.getArtifacts()) {
-                String versionlessKey = ArtifactUtils.versionlessKey(artifact);
+            for (Map.Entry<Dependency, Path> entry : getDependencies().entrySet()) {
+                String versionlessKey =
+                        entry.getKey().getGroupId() + ":" + entry.getKey().getArtifactId();
 
                 if (includes.matchesPatternStart(versionlessKey, true)
                         && !excludes.matchesPatternStart(versionlessKey, true)) {
-                    jdepsClasses.add(artifact.getFile().toPath());
+                    jdepsClasses.add(entry.getValue());
                 }
             }
         }
@@ -391,8 +391,7 @@ public abstract class AbstractJDepsMojo extends AbstractMojo {
      * if set, otherwise {@code "base"} if any analyzed JAR is itself a multi-release JAR and the resolved
      * {@code jdeps} executable understands the option (JDK 9+), otherwise {@code null} (option omitted).
      */
-    private String resolveMultiRelease(String jdepsExecutable, Set<Path> dependenciesToAnalyze)
-            throws DependencyResolutionRequiredException {
+    private String resolveMultiRelease(String jdepsExecutable, Set<Path> dependenciesToAnalyze) {
         if (multiRelease != null) {
             return multiRelease;
         }
@@ -565,8 +564,8 @@ public abstract class AbstractJDepsMojo extends AbstractMojo {
     }
 
     private void executeJDepsCommandLine(
-            Commandline cmd, File jOutputDirectory, CommandLineUtils.StringStreamConsumer consumer)
-            throws MojoExecutionException {
+            Commandline cmd, Path jOutputDirectory, CommandLineUtils.StringStreamConsumer consumer)
+            throws MojoException {
         if (getLog().isDebugEnabled()) {
             // no quoted arguments
             getLog().debug("Executing: "
@@ -608,14 +607,14 @@ public abstract class AbstractJDepsMojo extends AbstractMojo {
                 msg.append('\n');
                 msg.append("Command line was: ").append(cmd).append('\n').append('\n');
 
-                throw new MojoExecutionException(msg.toString());
+                throw new MojoException(msg.toString());
             }
 
             if (StringUtils.isNotEmpty(output)) {
                 getLog().info(output);
             }
         } catch (CommandLineException e) {
-            throw new MojoExecutionException("Unable to execute jdeps command: " + e.getMessage(), e);
+            throw new MojoException("Unable to execute jdeps command: " + e.getMessage(), e);
         }
 
         // ----------------------------------------------------------------------
@@ -637,29 +636,16 @@ public abstract class AbstractJDepsMojo extends AbstractMojo {
     private Toolchain getToolchain() {
         Toolchain tc = null;
         if (toolchainManager != null) {
-            tc = toolchainManager.getToolchainFromBuildContext("jdk", session);
+            tc = toolchainManager.getToolchainFromBuildContext(session, "jdk").orElse(null);
 
             if (tc == null) {
-                // Maven 3.2.6 has plugin execution scoped Toolchain Support
-                try {
-                    Method getToolchainsMethod = toolchainManager
-                            .getClass()
-                            .getMethod("getToolchains", MavenSession.class, String.class, Map.class);
+                // no toolchain selected by the build (i.e. no maven-toolchains-plugin execution):
+                // pick the latest available jdk, jdeps of JDK9 has more options compared to JDK8
+                List<Toolchain> tcs =
+                        toolchainManager.getToolchains(session, "jdk", Collections.singletonMap("version", "[1.8,)"));
 
-                    @SuppressWarnings("unchecked")
-                    List<Toolchain> tcs = (List<Toolchain>) getToolchainsMethod.invoke(
-                            toolchainManager, session, "jdk", Collections.singletonMap("version", "[1.8,)"));
-
-                    if (tcs != null && !tcs.isEmpty()) {
-                        // pick up latest, jdeps of JDK9 has more options compared to JDK8
-                        tc = tcs.get(tcs.size() - 1);
-                    }
-                } catch (NoSuchMethodException
-                        | SecurityException
-                        | IllegalAccessException
-                        | IllegalArgumentException
-                        | InvocationTargetException e) {
-                    // ignore
+                if (tcs != null && !tcs.isEmpty()) {
+                    tc = tcs.get(tcs.size() - 1);
                 }
             }
         }
@@ -671,7 +657,36 @@ public abstract class AbstractJDepsMojo extends AbstractMojo {
         return failOnWarning;
     }
 
-    protected abstract String getClassesDirectory();
+    protected abstract Path getClassesDirectory();
 
-    protected abstract Collection<Path> getClassPath() throws DependencyResolutionRequiredException;
+    /**
+     * The scope in which the project dependencies are resolved.
+     */
+    protected abstract PathScope getPathScope();
+
+    /**
+     * The classes directories and the resolved dependencies to put on the {@code jdeps} class path.
+     */
+    protected abstract Collection<Path> getClassPath();
+
+    /**
+     * The resolved dependencies, used to select the ones matching {@code dependenciesToAnalyzeIncludes}.
+     */
+    protected Map<Dependency, Path> getDependencies() {
+        return getResolution().getDependencies();
+    }
+
+    /**
+     * The resolved paths of the dependencies in {@link #getPathScope()}.
+     */
+    protected List<Path> getResolvedPaths() {
+        return getResolution().getPaths();
+    }
+
+    private DependencyResolverResult getResolution() {
+        if (resolution == null) {
+            resolution = dependencyResolver.resolve(session, project, getPathScope());
+        }
+        return resolution;
+    }
 }

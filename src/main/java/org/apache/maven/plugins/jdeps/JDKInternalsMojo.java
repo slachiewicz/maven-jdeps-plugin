@@ -18,51 +18,38 @@
  */
 package org.apache.maven.plugins.jdeps;
 
-import javax.inject.Inject;
-
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
-import org.apache.maven.artifact.DependencyResolutionRequiredException;
-import org.apache.maven.plugins.annotations.LifecyclePhase;
-import org.apache.maven.plugins.annotations.Mojo;
-import org.apache.maven.plugins.annotations.ResolutionScope;
-import org.apache.maven.toolchain.ToolchainManager;
+import org.apache.maven.api.PathScope;
+import org.apache.maven.api.ProjectScope;
+import org.apache.maven.api.plugin.annotations.Mojo;
 
 /**
  * Check if main classes depend on internal JDK classes.
  *
  * @author Robert Scholte
  */
-@Mojo(
-        name = "jdkinternals",
-        requiresDependencyResolution = ResolutionScope.COMPILE,
-        defaultPhase = LifecyclePhase.PROCESS_CLASSES,
-        threadSafe = true)
+@Mojo(name = "jdkinternals", defaultPhase = "process-classes")
 public class JDKInternalsMojo extends AbstractJDepsMojo {
 
-    @Inject
-    public JDKInternalsMojo(ToolchainManager toolchainManager) {
-        super(toolchainManager);
+    @Override
+    protected Path getClassesDirectory() {
+        return getProject().getOutputDirectory(ProjectScope.MAIN);
     }
 
     @Override
-    protected String getClassesDirectory() {
-        return getProject().getBuild().getOutputDirectory();
-    }
-
-    @Override
-    protected Collection<Path> getClassPath() throws DependencyResolutionRequiredException {
-        Set<Path> classPath =
-                new LinkedHashSet<>(getProject().getCompileClasspathElements().size());
-
-        for (String elm : getProject().getCompileClasspathElements()) {
-            classPath.add(Paths.get(elm));
-        }
-
+    protected Collection<Path> getClassPath() {
+        Set<Path> classPath = new LinkedHashSet<>();
+        classPath.add(getClassesDirectory());
+        classPath.addAll(getResolvedPaths());
         return classPath;
+    }
+
+    @Override
+    protected PathScope getPathScope() {
+        return PathScope.MAIN_COMPILE;
     }
 }
