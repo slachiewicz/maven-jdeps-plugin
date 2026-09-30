@@ -18,31 +18,22 @@
  */
 package org.apache.maven.plugins.jdeps;
 
-import javax.inject.Inject;
-
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
-import org.apache.maven.artifact.DependencyResolutionRequiredException;
-import org.apache.maven.plugins.annotations.LifecyclePhase;
-import org.apache.maven.plugins.annotations.Mojo;
-import org.apache.maven.plugins.annotations.Parameter;
-import org.apache.maven.plugins.annotations.ResolutionScope;
-import org.apache.maven.toolchain.ToolchainManager;
+import org.apache.maven.api.PathScope;
+import org.apache.maven.api.ProjectScope;
+import org.apache.maven.api.plugin.annotations.Mojo;
+import org.apache.maven.api.plugin.annotations.Parameter;
 
 /**
  * Check if test classes depend on internal JDK classes.
  *
  * @author Robert Scholte
  */
-@Mojo(
-        name = "test-jdkinternals",
-        requiresDependencyResolution = ResolutionScope.TEST,
-        defaultPhase = LifecyclePhase.PROCESS_TEST_CLASSES,
-        threadSafe = true)
+@Mojo(name = "test-jdkinternals", defaultPhase = "process-test-classes")
 public class TestJDKInternalsMojo extends AbstractJDepsMojo {
     /**
      * Indicates whether the build will continue even if there are jdeps warnings.
@@ -50,30 +41,27 @@ public class TestJDKInternalsMojo extends AbstractJDepsMojo {
     @Parameter(defaultValue = "true", property = "jdeps.test.failOnWarning")
     private boolean failOnWarning;
 
-    @Inject
-    public TestJDKInternalsMojo(ToolchainManager toolchainManager) {
-        super(toolchainManager);
-    }
-
     @Override
     protected boolean isFailOnWarning() {
         return failOnWarning;
     }
 
     @Override
-    protected String getClassesDirectory() {
-        return getProject().getBuild().getTestOutputDirectory();
+    protected Path getClassesDirectory() {
+        return getProject().getOutputDirectory(ProjectScope.TEST);
     }
 
     @Override
-    protected Collection<Path> getClassPath() throws DependencyResolutionRequiredException {
-        Set<Path> classPath =
-                new LinkedHashSet<>(getProject().getTestClasspathElements().size());
-
-        for (String elm : getProject().getTestClasspathElements()) {
-            classPath.add(Paths.get(elm));
-        }
-
+    protected Collection<Path> getClassPath() {
+        Set<Path> classPath = new LinkedHashSet<>();
+        classPath.add(getClassesDirectory());
+        classPath.add(getProject().getOutputDirectory(ProjectScope.MAIN));
+        classPath.addAll(getResolvedPaths());
         return classPath;
+    }
+
+    @Override
+    protected PathScope getPathScope() {
+        return PathScope.TEST_RUNTIME;
     }
 }
